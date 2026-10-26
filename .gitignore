@@ -218,3 +218,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+.idea
+
+# Local, machine-specific notes
+LOCAL_NOTES.md
