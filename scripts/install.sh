@@ -2,10 +2,10 @@
 # One command, run on the Mac: install the Mac tools, then install SPACE on the
 # Linux host and bring it up on KinD.
 #
-#   scripts/install.sh --space-host <host>
-#   SPACE_HOST=<host> scripts/install.sh
+#   scripts/install.sh --space-host <space-host>
+#   SPACE_HOST=<space-host> scripts/install.sh
 #
-# <host> is anything ssh accepts: a ~/.ssh/config alias or user@host.
+# <space-host> is anything ssh accepts: a ~/.ssh/config alias or user@host.
 #
 # Steps:
 #   1. scripts/mac-install.sh installs the Mac-side tools.
@@ -18,7 +18,7 @@
 # Safe to rerun: every step skips what's already done.
 #
 # Options:
-#   --space-host <host>  the Linux host (overrides SPACE_HOST)
+#   --space-host <space-host>  the Linux host (overrides SPACE_HOST)
 #   --check-only         run the host's prerequisite checks and stop
 #   -h, --help           show this help
 #
@@ -47,7 +47,7 @@ while [[ $# -gt 0 ]]; do
     *) die "unknown argument: $1 (see --help)" ;;
   esac
 done
-[[ -n "$host" ]] || die "no host given: pass --space-host <host> or set SPACE_HOST"
+[[ -n "$host" ]] || die "no host given: pass --space-host <space-host> or set SPACE_HOST"
 
 log "1/4 Mac tools"
 bash "$here/mac-install.sh"

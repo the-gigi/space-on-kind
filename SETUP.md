@@ -58,40 +58,40 @@ All of this happens on the Mac. The scripts reach the host with plain `ssh <name
 **Get a key.** Skip this if you already ssh to the host with a key. Otherwise create one for it:
 
 ```bash
-ssh-keygen -t ed25519 -f ~/.ssh/space-host -C space-on-kind
+ssh-keygen -t ed25519 -f ~/.ssh/space-on-kind -C space-on-kind
 ```
 
-The private key stays in `~/.ssh/space-host`. The host gets the public half, `~/.ssh/space-host.pub`:
+The private key stays in `~/.ssh/space-on-kind`. The host gets the public half, `~/.ssh/space-on-kind.pub`:
 
 | Host | How to install the public key |
 |---|---|
-| Your own Linux machine | `ssh-copy-id -i ~/.ssh/space-host.pub <user>@<host>` (needs password login once) |
+| Your own Linux machine | `ssh-copy-id -i ~/.ssh/space-on-kind.pub <user>@<host>` (needs password login once) |
 | GCP | `gcloud compute ssh <vm> --zone <zone>` creates and installs its own key, `~/.ssh/google_compute_engine`. Use that as the `IdentityFile`, or add yours under the VM's or project's SSH keys metadata |
-| AWS | Import it as an EC2 key pair (`aws ec2 import-key-pair --key-name space-host --public-key-material fileb://~/.ssh/space-host.pub`) and pick that key pair at launch. The user is `ubuntu` on Ubuntu AMIs |
+| AWS | Import it as an EC2 key pair (`aws ec2 import-key-pair --key-name space-on-kind --public-key-material fileb://~/.ssh/space-on-kind.pub`) and pick that key pair at launch. The user is `ubuntu` on Ubuntu AMIs |
 | Hetzner | Add it under SSH keys in the Robot console before you order or reinstall, and it lands in `root`'s `authorized_keys` |
 
-**Add the host** to `~/.ssh/config` so the scripts can refer to it by name:
+**Add the host** to `~/.ssh/config` so the scripts can refer to it by name. `<space-host>` is a name you pick here; the rest of this guide uses it wherever you see `<space-host>`:
 
 ```
-Host space-host
+Host <space-host>
     HostName <ip-or-dns-name>
     User <your-user>
-    IdentityFile ~/.ssh/space-host
+    IdentityFile ~/.ssh/space-on-kind
     IdentitiesOnly yes
     ServerAliveInterval 15
 ```
 
-Check it with `ssh space-host true`. It should return without asking for a password.
+Check it with `ssh <space-host> true`. It should return without asking for a password.
 
 ## 2. Install
 
 One command on the Mac does everything:
 
 ```bash
-scripts/install.sh --space-host space-host
+scripts/install.sh --space-host <space-host>
 ```
 
-You can set `SPACE_HOST=space-host` instead of passing `--space-host`. The script:
+You can set `SPACE_HOST=<space-host>` instead of passing `--space-host`. The script:
 
 1. **Installs the Mac tools.** `scripts/mac-install.sh` installs `kubectl` and [`jq`](https://jqlang.org/) if they aren't already on your `PATH`, using [Homebrew](https://brew.sh). Tools you installed some other way count, and Homebrew is only needed if something is missing. `ssh` and `curl` ship with macOS.
 2. **Checks ssh.** It stops if the host can't be reached without a password prompt.
@@ -110,8 +110,10 @@ Every step is safe to rerun: installed tools are kept and a running stack is reu
 ## 3. Connect from the Mac
 
 ```bash
-scripts/tunnel.sh space-host
+scripts/tunnel.sh <space-host>
 ```
+
+Replace `<space-host>` with your host's alias from [Set up ssh](#set-up-ssh), or set `SPACE_HOST` and leave it out. If ssh can't reach the host without a prompt, the script says so and stops.
 
 This forwards SPACE's ports from the host to `127.0.0.1` on the Mac, and forwards KinD's API server too:
 
@@ -124,13 +126,13 @@ This forwards SPACE's ports from the host to `127.0.0.1` on the Mac, and forward
 | 10350 | Tilt UI |
 | random | KinD API server, through `~/.kube/space-on-kind.yaml` |
 
-Rerunning it is safe. Stop it with `scripts/tunnel.sh space-host --stop`.
+Rerunning it is safe. Stop it with `scripts/tunnel.sh <space-host> --stop`.
 
 Check that every endpoint answers through the tunnel:
 
 ```
-$ scripts/tunnel.sh space-host --status
-[tunnel] tunnel to space-host is up; checking endpoints:
+$ scripts/tunnel.sh <space-host> --status
+[tunnel] tunnel to <space-host> is up; checking endpoints:
 [tunnel]   ok    API             http://127.0.0.1:8080/healthz
 [tunnel]   ok    Data-plane      http://127.0.0.1:8090/healthz
 [tunnel]   ok    UI              http://127.0.0.1:3000/login
@@ -256,9 +258,9 @@ The full API is in SPACE's [API reference](https://github.com/perplexityai/SPACE
 
 ### Tilt
 
-<http://127.0.0.1:10350> is Tilt's view of the bring-up: every image it built and every resource it deployed. Tilt keeps running on the host and redeploys anything that changes in the SPACE checkout there.
+<http://127.0.0.1:10350> is Tilt's view of the bring-up: every image it built and every resource it deployed, grouped by role. A healthy install shows every resource ready at the top (49/49 here) and every group green. The `control-plane` group holds SPACE's APIs and controllers: `space-api`, `space-admin-api`, `space-internal-api`, `space-data-plane`, `space-cluster-controller` and `space-credmgr-authority`, plus `metrics-server` and two KinD-only helpers, `space-kind-key-broker` and `space-kind-fake-ec2`. Tilt keeps running on the host and redeploys anything that changes in the SPACE checkout there.
 
-![Tilt UI](docs/images/tilt.png)
+![Tilt UI with the control-plane group expanded](docs/images/tilt-control-plane.png)
 
 ### kubectl
 

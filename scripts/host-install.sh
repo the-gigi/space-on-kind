@@ -225,6 +225,19 @@ step "Firecracker and guest kernel"
 unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
 bash infra/space/kind/scripts/install-fc-vendor.sh
 
+step "KinD node image"
+# The bring-up uses a local node image when one has the right tag, and otherwise
+# tries to pull SPACE's prebuilt one before building it. That prebuilt image
+# isn't publicly pullable, so the pull only prints an `unauthorized` error on
+# the way to the same local build. Build it here first and skip the detour.
+node_image="$(bash infra/space/kind/scripts/kind-node-image.sh ref)"
+if docker image inspect "$node_image" >/dev/null 2>&1; then
+  log "using the local $node_image"
+else
+  log "building $node_image"
+  bash infra/space/kind/scripts/kind-node-image.sh build
+fi
+
 step "Bringing up SPACE on KinD cluster '$SPACE_KIND_CLUSTER' (the first run builds everything)"
 log "Tilt UI: http://localhost:10350, log: ~/.space-devbox/kind/tilt-$SPACE_KIND_CLUSTER.log"
 bash infra/space/kind/scripts/up.sh
@@ -262,7 +275,7 @@ SPACE is up on KinD cluster '$SPACE_KIND_CLUSTER'.
   UI          http://127.0.0.1:3000   (root@local)
   Tilt UI     http://127.0.0.1:10350
 
-From the Mac, forward these with:  scripts/tunnel.sh <host>
+From the Mac, forward these with:  scripts/tunnel.sh <space-host>
 Then try SPACE's first sandbox:
   https://github.com/perplexityai/SPACE/blob/main/docs/first-sandbox.md
 EOF

@@ -3,11 +3,12 @@
 # kubeconfig for the host's KinD cluster. Safe to rerun: a tunnel that's
 # already up is left alone.
 #
-#   scripts/tunnel.sh <ssh-host>          start the tunnel
-#   scripts/tunnel.sh <ssh-host> --stop   stop it
-#   scripts/tunnel.sh <ssh-host> --status   check every forwarded endpoint
+#   scripts/tunnel.sh <space-host>            start the tunnel
+#   scripts/tunnel.sh <space-host> --stop     stop it
+#   scripts/tunnel.sh <space-host> --status   check every forwarded endpoint
 #
-# <ssh-host> is anything ssh accepts: a ~/.ssh/config alias or user@host.
+# <space-host> is anything ssh accepts: a ~/.ssh/config alias or user@host.
+# Leave it out to use SPACE_HOST, as scripts/install.sh does.
 # SPACE_KIND_CLUSTER picks the KinD cluster (default space-local, as in
 # SPACE's install guide).
 set -euo pipefail
@@ -15,9 +16,16 @@ set -euo pipefail
 log() { printf '[tunnel] %s\n' "$*"; }
 die() { printf '[tunnel] ERROR: %s\n' "$*" >&2; exit 1; }
 
-[[ $# -ge 1 ]] || die "usage: $0 <ssh-host> [--stop|--status]"
-host="$1"
-action="${2:-start}"
+host="${SPACE_HOST:-}"
+action=start
+for arg in "$@"; do
+  case "$arg" in
+    --stop|--status) action="$arg" ;;
+    -*) die "unknown option: $arg (usage: $0 [<space-host>] [--stop|--status])" ;;
+    *) host="$arg" ;;
+  esac
+done
+[[ -n "$host" ]] || die "no host given: usage: $0 <space-host> [--stop|--status], or set SPACE_HOST"
 cluster="${SPACE_KIND_CLUSTER:-space-local}"
 
 # API, data plane, UI, object storage, Tilt UI.
@@ -93,10 +101,17 @@ if running; then
   exit 0
 fi
 
+# Fail fast, and visibly, if ssh can't reach the host without a prompt. Without
+# this, an unknown name or a password prompt looks like a hang.
+log "checking ssh to $host"
+if ! ssh -o BatchMode=yes -o ConnectTimeout=15 "$host" true; then
+  die "can't ssh to $host without a password prompt; is the name right? See 'Set up ssh' in SETUP.md"
+fi
+
 # KinD's API server listens on a random loopback port on the host. Read it from
 # the cluster's kubeconfig and forward the same port, so the certificate (issued
 # for 127.0.0.1) still matches.
-remote_kubeconfig="$(ssh "$host" "PATH=\$HOME/.local/bin:\$PATH kind get kubeconfig --name '$cluster'" 2>/dev/null || true)"
+remote_kubeconfig="$(ssh -o BatchMode=yes -o ConnectTimeout=15 "$host" "PATH=\$HOME/.local/bin:\$PATH kind get kubeconfig --name '$cluster'" 2>/dev/null || true)"
 api_port=""
 if [[ -n "$remote_kubeconfig" ]]; then
   api_port="$(printf '%s\n' "$remote_kubeconfig" | sed -n 's#.*server: https://127\.0\.0\.1:\([0-9]*\).*#\1#p' | head -1)"
@@ -114,7 +129,7 @@ for port in $ports $api_port; do
 done
 
 ssh -f -N -M -S "$sock" \
-  -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+  -o BatchMode=yes -o ConnectTimeout=15 -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
   "${forwards[@]}" "$host"
 log "tunnel to $host is up: ports $ports${api_port:+ $api_port}"
 
