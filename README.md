@@ -11,6 +11,7 @@ This repo is for **macOS** users. SPACE needs an x86_64 Linux host with KVM, whi
 2. `scripts/install.sh --space-host <space-host>` installs the Mac tools, checks the host's prerequisites, then installs SPACE on the host and brings it up on KinD.
 3. `scripts/tunnel.sh <space-host>` forwards SPACE's API, data plane, UI and Tilt UI to `127.0.0.1` on your Mac. `scripts/tunnel.sh <space-host> --status` checks that each one answers.
 4. Look around: the UI at <http://127.0.0.1:3000> (`root@local` / `password`), the API at `http://127.0.0.1:8080`, and Tilt at <http://127.0.0.1:10350>. [SETUP.md](SETUP.md#4-look-around) walks through each with screenshots.
+5. Create a sandbox, run commands in it and open a terminal: [SANDBOX.md](SANDBOX.md). `scripts/space` is a small CLI for it: `scripts/space create hello`, then `scripts/space exec hello -- uname -a`.
 
 Every script is idempotent: rerun it any time.
 

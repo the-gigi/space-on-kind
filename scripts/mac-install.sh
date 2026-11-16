@@ -3,8 +3,9 @@
 # installed is left alone.
 #
 # The Mac is only the client. SPACE, Docker and KinD run on the Linux host, so
-# this installs just what talks to it: kubectl and jq. ssh and curl ship with
-# macOS.
+# this installs just what talks to it: kubectl and jq, plus the AWS CLI and zstd
+# for looking inside the cluster's object store (SANDBOX.md, "Where a suspended
+# sandbox goes"). ssh and curl ship with macOS.
 set -euo pipefail
 
 log() { printf '[mac-prereqs] %s\n' "$*"; }
@@ -14,7 +15,7 @@ die() { printf '[mac-prereqs] ERROR: %s\n' "$*" >&2; exit 1; }
 
 # command name -> Homebrew formula. A tool counts as installed if it's on PATH,
 # however it got there; Homebrew is only used for the missing ones.
-tools="kubectl:kubernetes-cli jq:jq"
+tools="kubectl:kubernetes-cli jq:jq aws:awscli zstd:zstd"
 
 for entry in $tools; do
   cmd="${entry%%:*}"

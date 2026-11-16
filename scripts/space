@@ -1,0 +1,283 @@
+#!/usr/bin/env bash
+# A small CLI for SPACE's public API, through the tunnel (scripts/tunnel.sh).
+# It makes the same REST calls SANDBOX.md walks through by hand.
+#
+#   scripts/space login                      log in and save the token
+#   scripts/space ls                         list sandboxes
+#   scripts/space create [<name>] [options]  create a sandbox and print its ID
+#       --template <ref>        default seed:latest
+#       --idle-timeout <dur>    e.g. 15m; default: the server's 6h
+#       --idle-action <action>  suspend (default) or delete
+#   scripts/space get <sandbox>              the sandbox's record, as JSON
+#   scripts/space stats <sandbox>            live resource and network counters
+#   scripts/space policy <sandbox>           the effective network policy
+#   scripts/space exec [--timeout <dur>] <sandbox> -- <command> [args...]
+#                                            run a command, stream its output,
+#                                            exit with its exit code
+#   scripts/space ps <sandbox>               running processes
+#   scripts/space kill <sandbox> <process>   kill a process
+#   scripts/space pause <sandbox>            freeze the VM's vCPUs; it stays on its node
+#   scripts/space resume <sandbox>           unfreeze a paused sandbox
+#   scripts/space suspend <sandbox>          save the whole VM, memory included,
+#                                            and take it off the node
+#   scripts/space wake <sandbox>             restore a suspended sandbox
+#   scripts/space rm <sandbox>               delete a sandbox
+#
+# <sandbox> is a sandbox ID, a unique ID prefix, or a unique name.
+#
+# Settings (environment variables):
+#   SPACE_API_URL           default http://127.0.0.1:8080
+#   SPACE_DATA_PLANE_URL    default http://127.0.0.1:8090
+#   SPACE_EMAIL             default root@local
+#   SPACE_CONSOLE_PASSWORD  default password (as in the install)
+set -euo pipefail
+
+API="${SPACE_API_URL:-http://127.0.0.1:8080}"
+DATA_PLANE="${SPACE_DATA_PLANE_URL:-http://127.0.0.1:8090}"
+EMAIL="${SPACE_EMAIL:-root@local}"
+STATE_DIR="$HOME/.space-on-kind"
+TOKEN_FILE="$STATE_DIR/api-token"
+
+die() { printf 'space: %s\n' "$*" >&2; exit 1; }
+note() { printf '%s\n' "$*" >&2; }
+usage() { sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed '$d; s/^# \{0,1\}//'; }
+
+command -v jq >/dev/null 2>&1 || die "jq is missing; run scripts/mac-install.sh"
+
+new_key() {
+  if command -v uuidgen >/dev/null 2>&1; then uuidgen
+  else cat /proc/sys/kernel/random/uuid
+  fi
+}
+
+# --- auth ----------------------------------------------------------------------
+
+login() {
+  local body token
+  body=$(jq -nc --arg e "$EMAIL" --arg p "${SPACE_CONSOLE_PASSWORD:-password}" '{email: $e, password: $p}')
+  token=$(curl -s --max-time 20 -H 'Content-Type: application/json' --data-binary "$body" \
+    "$API/auth/v1/sessions" | jq -r '.token // empty' 2>/dev/null) ||
+    die "can't reach $API; is the tunnel up? (scripts/tunnel.sh <space-host> --status)"
+  [[ -n "$token" ]] || die "login as $EMAIL failed; check SPACE_CONSOLE_PASSWORD"
+  mkdir -p "$STATE_DIR"
+  (umask 077; printf '%s\n' "$token" > "$TOKEN_FILE")
+}
+
+token() {
+  [[ -s "$TOKEN_FILE" ]] || login
+  cat "$TOKEN_FILE"
+}
+
+# api <method> <path> [json-body]: prints the response body. Logs in again once
+# if the token was rejected. Exits with the API's error message otherwise.
+api() {
+  local method=$1 path=$2 body=${3:-} attempt out code
+  for attempt in 1 2; do
+    local args=(-s --max-time 60 -X "$method" -H "Authorization: Bearer $(token)" -w '\n%{http_code}')
+    if [[ "$method" != GET ]]; then
+      args+=(-H "Idempotency-Key: space-cli-$(new_key)")
+      [[ -n "$body" ]] && args+=(-H 'Content-Type: application/json' --data-binary "$body")
+    fi
+    out=$(curl "${args[@]}" "$API$path") ||
+      die "can't reach $API; is the tunnel up? (scripts/tunnel.sh <space-host> --status)"
+    code=${out##*$'\n'}
+    out=${out%$'\n'*}
+    if [[ "$code" == 401 && "$attempt" == 1 ]]; then
+      login
+      continue
+    fi
+    if [[ "$code" -ge 400 ]]; then
+      die "$method $path: HTTP $code: $(printf '%s' "$out" | jq -r '"\(.code): \(.message)"' 2>/dev/null || printf '%s' "$out")"
+    fi
+    printf '%s\n' "$out"
+    return 0
+  done
+}
+
+# --- helpers -------------------------------------------------------------------
+
+# Print every sandbox, following pagination.
+all_sandboxes() {
+  local cursor="" page
+  while :; do
+    page=$(api GET "/v1/sandboxes?limit=100${cursor:+&cursor=$cursor}")
+    printf '%s\n' "$page" | jq -c '.data[]'
+    cursor=$(printf '%s\n' "$page" | jq -r '.next_cursor // empty')
+    [[ -n "$cursor" ]] || break
+  done
+}
+
+# Resolve a sandbox ID, ID prefix or name to its full ID.
+resolve() {
+  local want=$1 matches n
+  [[ -n "$want" ]] || die "which sandbox? (see: space ls)"
+  matches=$(all_sandboxes | jq -r --arg w "$want" '
+    select(.id == $w or .id == ("sbx_" + $w) or .name == $w
+           or (.id | startswith($w)) or (.id | startswith("sbx_" + $w))) | .id' | sort -u)
+  n=$(printf '%s' "$matches" | grep -c . || true)
+  [[ "$n" -ge 1 ]] || die "no sandbox matches '$want' (see: space ls)"
+  [[ "$n" -eq 1 ]] || die "'$want' matches $n sandboxes; use more of the ID"
+  printf '%s\n' "$matches"
+}
+
+# Poll an operation until it reaches a terminal state.
+wait_op() {
+  local op=$1 state result _
+  for _ in $(seq 1 180); do
+    result=$(api GET "/v1/operations/$op")
+    state=$(printf '%s\n' "$result" | jq -r .state)
+    case $state in
+      succeeded) return 0 ;;
+      failed|canceled|expired)
+        die "operation $op $state: $(printf '%s\n' "$result" | jq -r '.terminal_error // .terminal_error_code // "no detail"')" ;;
+    esac
+    sleep 1
+  done
+  die "operation $op is still $state after 180s"
+}
+
+# The API doesn't reject `resume` on a suspended sandbox. It restores it through
+# its recovery path, which took about 84 s once against 2.4 s for `wake`, with
+# nothing on screen, so it looks like a hang. Check the state and point at wake.
+check_lifecycle_state() {
+  local action=$1 id=$2 state
+  state=$(api GET "/v1/sandboxes/$id" | jq -r .state)
+  if [[ "$action" == resume && "$state" == suspended ]]; then
+    die "$id is suspended, not paused; resume only unfreezes a paused sandbox. Wake it instead: space wake $id"
+  fi
+}
+
+lifecycle() {
+  local action=$1 id op
+  id=$(resolve "${2:-}")
+  check_lifecycle_state "$action" "$id"
+  op=$(api POST "/v1/sandboxes/${id}:${action}" | jq -r .operation_id)
+  wait_op "$op"
+  note "$id: $(api GET "/v1/sandboxes/$id" | jq -r .state)"
+}
+
+# --- commands ------------------------------------------------------------------
+
+cmd_ls() {
+  {
+    printf 'ID\tNAME\tSTATE\tCREATED\n'
+    all_sandboxes | jq -r '[.id, (.name // "-"), .state, (.created_at | sub("\\.[0-9]+Z$"; "Z"))] | @tsv'
+  } | column -t -s $'\t'
+}
+
+cmd_create() {
+  local name="" template="seed:latest" idle_timeout="" idle_action="" body created
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --template) template=${2:?--template needs a value}; shift 2 ;;
+      --idle-timeout) idle_timeout=${2:?--idle-timeout needs a value}; shift 2 ;;
+      --idle-action) idle_action=${2:?--idle-action needs a value}; shift 2 ;;
+      -*) die "unknown option: $1" ;;
+      *) name=$1; shift ;;
+    esac
+  done
+  body=$(jq -nc --arg t "$template" --arg n "$name" --arg it "$idle_timeout" --arg ia "$idle_action" '
+    {template: $t, runtime: "fc"}
+    + (if $n != "" then {name: $n} else {} end)
+    + (if $it != "" then {idle_timeout: $it} else {} end)
+    + (if $ia != "" then {idle_action: $ia} else {} end)')
+  created=$(api POST /v1/sandboxes "$body")
+  note "creating $(printf '%s\n' "$created" | jq -r .sandbox_id)..."
+  wait_op "$(printf '%s\n' "$created" | jq -r .operation_id)"
+  printf '%s\n' "$created" | jq -r .sandbox_id
+}
+
+cmd_exec() {
+  local timeout=30s id state cmd url attach_token tag data exit_code=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --timeout) timeout=${2:?--timeout needs a value}; shift 2 ;;
+      --) shift; break ;;
+      -*) die "unknown option: $1" ;;
+      *) [[ -z "${id:-}" ]] || break; id=$(resolve "$1"); shift ;;
+    esac
+  done
+  [[ -n "${id:-}" ]] || die "usage: space exec [--timeout <dur>] <sandbox> -- <command> [args...]"
+  [[ $# -gt 0 ]] || die "no command given (space exec <sandbox> -- <command> [args...])"
+
+  # A paused or suspended sandbox accepts the request but never runs it.
+  state=$(api GET "/v1/sandboxes/$id" | jq -r .state)
+  case $state in
+    running) ;;
+    paused) die "$id is paused; run: space resume $id" ;;
+    suspended) die "$id is suspended; run: space wake $id" ;;
+    *) die "$id is $state, not running" ;;
+  esac
+
+  # Pass the words through NUL-separated input, not jq arguments, so a word like
+  # `-c` can't be read as a jq option.
+  cmd=$(api POST "/v1/sandboxes/$id/commands" \
+    "$(printf '%s\0' "$@" | jq -Rsc --arg t "$timeout" '{command: (split("\u0000") | .[:-1]), timeout: $t}')")
+  url=$(printf '%s\n' "$cmd" | jq -r .attach.events_url)
+  [[ "$url" == /* ]] && url="$DATA_PLANE$url"
+  attach_token=$(printf '%s\n' "$cmd" | jq -r .attach.token)
+
+  # Turn the event stream into tagged lines: O/E base64 output, X exit code,
+  # ! error. Decoding happens here so stdout and stderr stay separate.
+  while IFS=' ' read -r tag data; do
+    case $tag in
+      O) printf '%s' "$data" | base64 -d ;;
+      E) printf '%s' "$data" | base64 -d >&2 ;;
+      X) exit_code=$data ;;
+      !) die "command stream: $data" ;;
+    esac
+  done < <(curl -sN --max-time 86400 -H "Authorization: Bearer $attach_token" \
+             -H 'Accept: text/event-stream' "$url" |
+           sed -u -n -e 's/^data: //p' -e '/^{"error"/p' |
+           jq --unbuffered -r '
+             if .error then "! \(.error.code): \(.error.message)"
+             elif .type == "stdout" then "O \(.data_base64)"
+             elif .type == "stderr" then "E \(.data_base64)"
+             elif .type == "process_exited" then "X \(.exit_code)"
+             elif .type == "error" or .type == "resync_required" then "! \(.type)"
+             else empty end')
+
+  [[ -n "$exit_code" ]] || die "the stream ended without an exit code"
+  exit "$exit_code"
+}
+
+cmd_ps() {
+  local id
+  id=$(resolve "${1:-}")
+  {
+    printf 'PROCESS\tPID\tCOMMAND\n'
+    api GET "/v1/sandboxes/$id/processes" | jq -r '.data[] | [.process_id, .pid, (.command | join(" "))] | @tsv'
+  } | column -t -s $'\t'
+}
+
+cmd_kill() {
+  local id
+  id=$(resolve "${1:-}")
+  [[ -n "${2:-}" ]] || die "usage: space kill <sandbox> <process>"
+  api POST "/v1/sandboxes/$id/processes/${2}:kill" >/dev/null
+  note "killed $2"
+}
+
+cmd_rm() {
+  local id op
+  id=$(resolve "${1:-}")
+  op=$(api DELETE "/v1/sandboxes/$id" | jq -r .operation_id)
+  wait_op "$op"
+  note "deleted $id"
+}
+
+case "${1:-}" in
+  login) login; note "logged in as $EMAIL" ;;
+  ls|list) cmd_ls ;;
+  create) shift; cmd_create "$@" ;;
+  get) id=$(resolve "${2:-}"); api GET "/v1/sandboxes/$id" | jq . ;;
+  stats) id=$(resolve "${2:-}"); api GET "/v1/sandboxes/$id/stats" | jq . ;;
+  policy) id=$(resolve "${2:-}"); api GET "/v1/sandboxes/$id/network-policy" | jq . ;;
+  exec) shift; cmd_exec "$@" ;;
+  ps) cmd_ps "${2:-}" ;;
+  kill) shift; cmd_kill "$@" ;;
+  pause|resume|suspend|wake) lifecycle "$1" "${2:-}" ;;
+  rm|delete) cmd_rm "${2:-}" ;;
+  -h|--help|help|"") usage ;;
+  *) die "unknown command: $1 (see: space --help)" ;;
+esac

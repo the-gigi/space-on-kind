@@ -1,6 +1,6 @@
 # Setup
 
-Get a Linux host, install SPACE on it, connect your Mac, and look around. Creating and using a sandbox comes next, in its own doc.
+Get a Linux host, install SPACE on it, connect your Mac, and look around. Creating and using a sandbox comes next, in [SANDBOX.md](SANDBOX.md).
 
 This repo is for **macOS**. [SPACE](https://github.com/perplexityai/SPACE) itself can't run on a Mac, so the setup has two parts:
 
@@ -93,7 +93,7 @@ scripts/install.sh --space-host <space-host>
 
 You can set `SPACE_HOST=<space-host>` instead of passing `--space-host`. The script:
 
-1. **Installs the Mac tools.** `scripts/mac-install.sh` installs `kubectl` and [`jq`](https://jqlang.org/) if they aren't already on your `PATH`, using [Homebrew](https://brew.sh). Tools you installed some other way count, and Homebrew is only needed if something is missing. `ssh` and `curl` ship with macOS.
+1. **Installs the Mac tools.** `scripts/mac-install.sh` installs `kubectl`, [`jq`](https://jqlang.org/), the [AWS CLI](https://aws.amazon.com/cli/) and [`zstd`](https://facebook.github.io/zstd/) if they aren't already on your `PATH`, using [Homebrew](https://brew.sh). Tools you installed some other way count, and Homebrew is only needed if something is missing. `ssh` and `curl` ship with macOS.
 2. **Checks ssh.** It stops if the host can't be reached without a password prompt.
 3. **Copies `scripts/host-install.sh`** to `~/.space-on-kind/` on the host.
 4. **Runs it on the host.** `host-install.sh` checks every host prerequisite first: platform, devices, tools, Docker and free disk, plus one throwaway privileged container. If anything fails, it stops before installing anything and tells you what to fix. Then it does what SPACE's [install guide](https://github.com/perplexityai/SPACE/blob/main/docs/installation.md) describes:
@@ -281,3 +281,7 @@ SPACE runs as about 60 pods: Deployments for the API and control plane, a Statef
 ```bash
 kubectl get deploy,statefulset,daemonset,job -n space --kubeconfig ~/.kube/space-on-kind.yaml --context kind-space-local
 ```
+
+## Next
+
+Create a sandbox, run commands in it and use its terminal: [SANDBOX.md](SANDBOX.md).
